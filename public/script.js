@@ -1,7 +1,5 @@
 document.addEventListener('DOMContentLoaded', () => {
-    // ==================================================== //
-    // |                 DOM ELEMENT REFERENCES             | //
-    // ==================================================== //
+    // (DOM element references remain the same)
     const chatHistoryList = document.getElementById('chat-history-list');
     const newChatBtn = document.getElementById('new-chat-btn');
     const chatMessages = document.getElementById('chat-messages');
@@ -12,17 +10,168 @@ document.addEventListener('DOMContentLoaded', () => {
     const imagePreviewContainer = document.getElementById('image-preview-container');
     const sendBtn = document.getElementById('send-btn');
 
-    // ==================================================== //
-    // |                   STATE MANAGEMENT                 | //
-    // ==================================================== //
+    // (State management remains the same)
     let chatHistory = [];
     let currentChatId = null;
     let isAIGenerating = false;
-    let uploadedImages = []; // Will store Base64 strings of images
+    let uploadedImages = [];
 
-    // ==================================================== //
-    // |                  INITIALIZATION                  | //
-    // ==================================================== //
+    // === CHANGED: ADDED NEW EVENT LISTENER FOR DELETE ===
+    function addEventListeners() {
+        chatForm.addEventListener('submit', handleSendMessage);
+        messageInput.addEventListener('input', () => {
+            autoResizeTextarea();
+            updateSendButtonState();
+        });
+        messageInput.addEventListener('keydown', handleEnterKey);
+        newChatBtn.addEventListener('click', startNewChat);
+        chatHistoryList.addEventListener('click', handleSidebarClick);
+        imageUploadBtn.addEventListener('click', () => imageUploadInput.click());
+        imageUploadInput.addEventListener('change', handleImageUpload);
+        imagePreviewContainer.addEventListener('click', handleRemoveImage);
+        chatMessages.addEventListener('mouseup', handleTextSelection);
+        
+        // New listener for delete buttons, using event delegation
+        chatMessages.addEventListener('click', handleMessageActions);
+    }
+    
+    // === CHANGED: MODIFIED TO ADD DELETE BUTTON AND MESSAGE INDEX ===
+    function addMessageToUI(message, isStreaming = false, index = -1) {
+        const { role, parts } = message;
+        const messageWrapper = document.createElement('div');
+        messageWrapper.classList.add('message-wrapper', `${role}-message-wrapper`);
+        // Add a data attribute to identify the message index for deletion
+        if (index !== -1) {
+            messageWrapper.dataset.messageIndex = index;
+        }
+
+        const messageDiv = document.createElement('div');
+        messageDiv.classList.add('message', `${role}-message`);
+
+        // Add the delete button HTML
+        const deleteBtnHTML = `<button class="delete-msg-btn" title="Delete message">×</button>`;
+        
+        let contentHTML = '';
+        if (role === 'ai' && isStreaming) {
+            contentHTML = `<div class="typing-indicator"><span></span><span></span><span></span></div>`;
+        } else {
+            parts.forEach(part => {
+                if (part.type === 'text') {
+                    contentHTML += marked.parse(part.text);
+                } else if (part.type === 'image') {
+                    contentHTML += `<div class="sent-image-container"><img src="${part.data}" alt="User uploaded image"></div>`;
+                }
+            });
+        }
+        messageDiv.innerHTML = contentHTML;
+
+        messageWrapper.appendChild(messageDiv);
+        // Only add delete button to non-streaming, saved messages
+        if (!isStreaming) {
+            messageWrapper.innerHTML += deleteBtnHTML;
+        }
+        chatMessages.appendChild(messageWrapper);
+        
+        messageDiv.querySelectorAll('pre code').forEach(hljs.highlightElement);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+        return messageDiv;
+    }
+    
+    // === CHANGED: RENDER MESSAGES WITH THEIR INDEX ===
+    function renderChatMessages(chatId) {
+        chatMessages.innerHTML = '';
+        const chat = chatHistory.find(c => c.id === chatId);
+        if (!chat || chat.messages.length === 0) {
+            // Can't delete the initial welcome message, so no index needed
+            addMessageToUI({ role: 'ai', parts: [{ type: 'text', text: 'Hello! How can I help you learn something new today?' }] });
+            return;
+        }
+        // Pass the index to addMessageToUI
+        chat.messages.forEach((msg, index) => addMessageToUI(msg, false, index));
+    }
+
+    // === NEW: HANDLER FOR DELETE BUTTON CLICKS ===
+    function handleMessageActions(e) {
+        if (e.target.classList.contains('delete-msg-btn')) {
+            const messageWrapper = e.target.closest('.message-wrapper');
+            const messageIndex = parseInt(messageWrapper.dataset.messageIndex, 10);
+            
+            if (confirm('Are you sure you want to delete this message?')) {
+                const currentChat = chatHistory.find(c => c.id === currentChatId);
+                if (currentChat && currentChat.messages[messageIndex]) {
+                    // Remove the message from the array
+                    currentChat.messages.splice(messageIndex, 1);
+                    saveChatsToLocalStorage();
+                    // Re-render the chat to reflect the deletion
+                    renderChatMessages(currentChatId);
+                }
+            }
+        }
+    }
+    
+    // === CHANGED: IMPROVED ERROR HANDLING IN API CALL ===
+    async function getAIResponse(images) {
+        isAIGenerating = true;
+        const aiMessageElement = addMessageToUI({ role: 'ai', parts: [] }, true);
+
+        try {
+            // ... (The try block content remains the same)
+            const currentChat = chatHistory.find(c => c.id === currentChatId);
+            const apiMessages = currentChat.messages.map(msg => {
+                const apiParts = msg.parts.map(part => {
+                    if (part.type === 'text') return { text: part.text };
+                    if (part.type === 'image') return { inline_data: { mime_type: part.mimeType, data: part.data.split(',')[1] } };
+                }).filter(Boolean);
+                return { role: msg.role === 'ai' ? 'model' : 'user', parts: apiParts };
+            });
+
+            const response = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: apiMessages }),
+            });
+
+            if (!response.ok) {
+                const errorBody = await response.text();
+                // Throw a more detailed error
+                throw new Error(`API Error (${response.status}): ${errorBody}`);
+            }
+            
+            // ... (The rest of the try block remains the same)
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let fullResponse = '';
+            aiMessageElement.innerHTML = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                fullResponse += decoder.decode(value, { stream: true });
+                aiMessageElement.innerHTML = marked.parse(fullResponse);
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+
+            aiMessageElement.querySelectorAll('pre code').forEach(hljs.highlightElement);
+            currentChat.messages.push({ role: 'ai', parts: [{ type: 'text', text: fullResponse }] });
+            saveChatsToLocalStorage();
+            // Re-render to add delete button to the new AI message
+            renderChatMessages(currentChatId);
+
+        } catch (error) {
+            // Now displays a more helpful error message
+            console.error('Error fetching AI response:', error);
+            const errorMessage = `Sorry, an error occurred. Check the developer console for details. (Error: ${error.message})`;
+            aiMessageElement.innerHTML = marked.parse(errorMessage);
+        } finally {
+            isAIGenerating = false;
+        }
+    }
+
+    // --- The rest of your script.js can remain as it was ---
+    // (initializeApp, loadChatsFromLocalStorage, saveChatsToLocalStorage, etc.)
+    // Just ensure the changed functions above replace the old ones.
+    
+    // For clarity, here are the functions that did not change significantly
     function initializeApp() {
         loadChatsFromLocalStorage();
         renderChatHistorySidebar();
@@ -35,28 +184,6 @@ document.addEventListener('DOMContentLoaded', () => {
         updateSendButtonState();
     }
 
-    function addEventListeners() {
-        chatForm.addEventListener('submit', handleSendMessage);
-        messageInput.addEventListener('input', () => {
-            autoResizeTextarea();
-            updateSendButtonState();
-        });
-        messageInput.addEventListener('keydown', handleEnterKey);
-        newChatBtn.addEventListener('click', startNewChat);
-        chatHistoryList.addEventListener('click', handleSidebarClick);
-        
-        // Image handling listeners
-        imageUploadBtn.addEventListener('click', () => imageUploadInput.click());
-        imageUploadInput.addEventListener('change', handleImageUpload);
-        imagePreviewContainer.addEventListener('click', handleRemoveImage);
-
-        // Contextual chat listener
-        chatMessages.addEventListener('mouseup', handleTextSelection);
-    }
-
-    // ==================================================== //
-    // |              CONVERSATION MANAGEMENT             | //
-    // ==================================================== //
     function loadChatsFromLocalStorage() {
         const storedChats = localStorage.getItem('ai-chat-history');
         chatHistory = storedChats ? JSON.parse(storedChats) : [];
@@ -86,7 +213,7 @@ document.addEventListener('DOMContentLoaded', () => {
         renderChatHistorySidebar();
         renderChatMessages(chatId);
     }
-
+    
     function deleteChat(chatId) {
         chatHistory = chatHistory.filter(chat => chat.id !== chatId);
         saveChatsToLocalStorage();
@@ -95,19 +222,16 @@ document.addEventListener('DOMContentLoaded', () => {
             chatHistory.length > 0 ? switchChat(chatHistory[0].id) : startNewChat();
         }
     }
-    
+
     function clearInputs() {
         messageInput.value = '';
         uploadedImages = [];
-        imageUploadInput.value = ''; // Reset file input
+        imageUploadInput.value = '';
         renderImagePreviews();
         autoResizeTextarea();
         updateSendButtonState();
     }
 
-    // ==================================================== //
-    // |                  UI RENDERING                    | //
-    // ==================================================== //
     function renderChatHistorySidebar() {
         chatHistoryList.innerHTML = '';
         chatHistory.forEach(chat => {
@@ -128,46 +252,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    function renderChatMessages(chatId) {
-        chatMessages.innerHTML = '';
-        const chat = chatHistory.find(c => c.id === chatId);
-        if (!chat || chat.messages.length === 0) {
-            addMessageToUI({ role: 'ai', parts: [{ type: 'text', text: 'Hello! How can I help you learn something new today?' }] });
-            return;
-        }
-        chat.messages.forEach(msg => addMessageToUI(msg));
-    }
-
-    function addMessageToUI(message, isStreaming = false) {
-        const { role, parts } = message;
-        const messageWrapper = document.createElement('div');
-        messageWrapper.classList.add('message-wrapper', `${role}-message-wrapper`);
-
-        const messageDiv = document.createElement('div');
-        messageDiv.classList.add('message', `${role}-message`);
-
-        let contentHTML = '';
-        if (role === 'ai' && isStreaming) {
-            contentHTML = `<div class="typing-indicator"><span></span><span></span><span></span></div>`;
-        } else {
-            parts.forEach(part => {
-                if (part.type === 'text') {
-                    contentHTML += marked.parse(part.text);
-                } else if (part.type === 'image') {
-                    contentHTML += `<div class="sent-image-container"><img src="${part.data}" alt="User uploaded image"></div>`;
-                }
-            });
-        }
-        messageDiv.innerHTML = contentHTML;
-
-        messageWrapper.appendChild(messageDiv);
-        chatMessages.appendChild(messageWrapper);
-        
-        messageDiv.querySelectorAll('pre code').forEach(hljs.highlightElement);
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-        return messageDiv;
-    }
-
     function autoResizeTextarea() {
         messageInput.style.height = 'auto';
         messageInput.style.height = `${messageInput.scrollHeight}px`;
@@ -176,25 +260,20 @@ document.addEventListener('DOMContentLoaded', () => {
     function updateSendButtonState() {
         sendBtn.classList.toggle('active', messageInput.value.trim().length > 0);
     }
-    
-    // ==================================================== //
-    // |                IMAGE HANDLING                    | //
-    // ==================================================== //
+
     function handleImageUpload(e) {
         const files = e.target.files;
         if (!files) return;
-
         if (uploadedImages.length + files.length > 10) {
             alert('You can upload a maximum of 10 images.');
             return;
         }
-
         for (const file of files) {
             const reader = new FileReader();
             reader.onload = (event) => {
                 uploadedImages.push({
                     mimeType: file.type,
-                    data: event.target.result // This is the Base64 string
+                    data: event.target.result
                 });
                 renderImagePreviews();
             };
@@ -207,15 +286,12 @@ document.addEventListener('DOMContentLoaded', () => {
         uploadedImages.forEach((image, index) => {
             const thumbWrapper = document.createElement('div');
             thumbWrapper.className = 'image-thumbnail';
-            
             const img = document.createElement('img');
             img.src = image.data;
-            
             const removeBtn = document.createElement('button');
             removeBtn.className = 'remove-image-btn';
             removeBtn.innerHTML = '×';
             removeBtn.dataset.index = index;
-            
             thumbWrapper.appendChild(img);
             thumbWrapper.appendChild(removeBtn);
             imagePreviewContainer.appendChild(thumbWrapper);
@@ -229,10 +305,7 @@ document.addEventListener('DOMContentLoaded', () => {
             renderImagePreviews();
         }
     }
-
-    // ==================================================== //
-    // |                EVENT HANDLERS                    | //
-    // ==================================================== //
+    
     function handleSidebarClick(e) {
         const li = e.target.closest('li');
         if (li) {
@@ -263,7 +336,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const currentChat = chatHistory.find(c => c.id === currentChatId);
         
-        // Construct the user message with multiple parts (text and images)
         const userMessage = { role: 'user', parts: [] };
         if (userInput) {
             userMessage.parts.push({ type: 'text', text: userInput });
@@ -272,99 +344,30 @@ document.addEventListener('DOMContentLoaded', () => {
             userMessage.parts.push({ type: 'image', data: img.data, mimeType: img.mimeType });
         });
 
-        // Update state and UI
         if (currentChat.messages.length === 0 && userInput) {
             currentChat.title = userInput.substring(0, 30) + (userInput.length > 30 ? '...' : '');
             renderChatHistorySidebar();
         }
         currentChat.messages.push(userMessage);
-        addMessageToUI(userMessage);
+        
+        // Render immediately to show user message
+        renderChatMessages(currentChatId);
         saveChatsToLocalStorage();
         
-        const imagesForAPI = [...uploadedImages]; // Copy images for the API call
-        clearInputs(); // Clear UI inputs immediately
+        const imagesForAPI = [...uploadedImages];
+        clearInputs();
 
         await getAIResponse(imagesForAPI);
     }
 
-    // ==================================================== //
-    // |                 API COMMUNICATION                | //
-    // ==================================================== //
-    async function getAIResponse(images) {
-        isAIGenerating = true;
-        const aiMessageElement = addMessageToUI({ role: 'ai', parts: [] }, true);
-
-        try {
-            const currentChat = chatHistory.find(c => c.id === currentChatId);
-            
-            // Format messages for Gemini API
-            const apiMessages = currentChat.messages.map(msg => {
-                const apiParts = msg.parts.map(part => {
-                    if (part.type === 'text') {
-                        return { text: part.text };
-                    }
-                    if (part.type === 'image') {
-                        // Gemini needs the Base64 data without the data URL prefix
-                        return { inline_data: { mime_type: part.mimeType, data: part.data.split(',')[1] } };
-                    }
-                }).filter(Boolean); // Filter out any null/undefined parts
-                
-                return { role: msg.role === 'ai' ? 'model' : 'user', parts: apiParts };
-            });
-
-            const response = await fetch('/api/chat', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: apiMessages }),
-            });
-
-            if (!response.ok) throw new Error(`API Error: ${response.statusText}`);
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let fullResponse = '';
-            aiMessageElement.innerHTML = '';
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                
-                fullResponse += decoder.decode(value, { stream: true });
-                aiMessageElement.innerHTML = marked.parse(fullResponse);
-                chatMessages.scrollTop = chatMessages.scrollHeight;
-            }
-
-            aiMessageElement.querySelectorAll('pre code').forEach(hljs.highlightElement);
-            currentChat.messages.push({ role: 'ai', parts: [{ type: 'text', text: fullResponse }] });
-            saveChatsToLocalStorage();
-
-        } catch (error) {
-            console.error('Error fetching AI response:', error);
-            aiMessageElement.innerHTML = "Sorry, I encountered an error. Please try again.";
-        } finally {
-            isAIGenerating = false;
-        }
-    }
-
-    // ==================================================== //
-    // |             CONTEXTUAL CHAT FEATURE              | //
-    // ==================================================== //
     function handleTextSelection(e) {
         const selection = window.getSelection();
         const selectedText = selection.toString().trim();
 
         if (selectedText && selection.anchorNode.parentElement.closest('.ai-message')) {
-            // This is where you would show your contextual popup.
-            // For now, we'll use an alert to demonstrate it's working.
             alert(`Contextual Chat Triggered!\n\nSelected Text: "${selectedText}"\n\n(This feature's UI can now be fully implemented.)`);
-            // To implement fully:
-            // 1. Get the popup elements (already referenced at the top).
-            // 2. Set the content of the blockquote: popupContextQuote.textContent = selectedText;
-            // 3. Show the popup: contextualChatPopup.classList.remove('hidden');
-            // 4. Add event listeners to the popup's input and send button to handle the sub-conversation.
         }
     }
 
-    // Let's start the application!
     initializeApp();
 });

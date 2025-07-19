@@ -289,6 +289,59 @@ body {
 }
 /* ========================================= */
 
+/* ==================================================== */
+/* |                  MESSAGE CONTENT STYLES            | */
+/* ==================================================== */
+
+/* This is the new part that fixes the giant image */
+.message .sent-image-container img {
+    max-width: 350px; /* Or any size you prefer */
+    max-height: 350px;
+    border-radius: 8px;
+    margin-top: 10px;
+    border: 1px solid var(--border-color);
+}
+
+/* New styles for the delete button */
+.message-wrapper {
+    position: relative; /* Needed for positioning the delete button */
+}
+
+.delete-msg-btn {
+    position: absolute;
+    top: 2px;
+    background-color: var(--background-dark);
+    color: #888;
+    border: 1px solid var(--border-color);
+    border-radius: 50%;
+    width: 22px;
+    height: 22px;
+    font-size: 12px;
+    line-height: 20px;
+    text-align: center;
+    cursor: pointer;
+    opacity: 0; /* Hidden by default */
+    transition: opacity 0.2s;
+}
+
+.user-message-wrapper .delete-msg-btn {
+    left: -28px; /* Position to the left of user messages */
+}
+
+.ai-message-wrapper .delete-msg-btn {
+    right: -28px; /* Position to the right of AI messages */
+}
+
+.message-wrapper:hover .delete-msg-btn {
+    opacity: 1; /* Show on hover */
+}
+
+.delete-msg-btn:hover {
+    background-color: #ff4d4d;
+    color: white;
+    border-color: #ff4d4d;
+}
+
 #chat-form button svg {
     width: 24px;
     height: 24px;

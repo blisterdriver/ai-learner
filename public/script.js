@@ -9,20 +9,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const messageInput = document.getElementById('message-input');
     const imageUploadBtn = document.getElementById('image-upload-btn');
     const imageUploadInput = document.getElementById('image-upload-input');
-
-    // For the future contextual chat popup
-    // Note: The logic for this is complex and will be added in a later step.
-    // This setup gets the elements ready.
-    const contextualChatPopup = document.getElementById('contextual-chat-popup');
-    const closePopupBtn = document.getElementById('close-popup-btn');
-    const popupContextQuote = contextualChatPopup.querySelector('blockquote');
+    const imagePreviewContainer = document.getElementById('image-preview-container');
+    const sendBtn = document.getElementById('send-btn');
 
     // ==================================================== //
     // |                   STATE MANAGEMENT                 | //
     // ==================================================== //
-    let chatHistory = []; // Array of all chat sessions: [{ id, title, messages: [{ role, content }] }]
+    let chatHistory = [];
     let currentChatId = null;
     let isAIGenerating = false;
+    let uploadedImages = []; // Will store Base64 strings of images
 
     // ==================================================== //
     // |                  INITIALIZATION                  | //
@@ -31,22 +27,31 @@ document.addEventListener('DOMContentLoaded', () => {
         loadChatsFromLocalStorage();
         renderChatHistorySidebar();
         if (chatHistory.length > 0) {
-            // Load the most recent chat by default
             switchChat(chatHistory[0].id);
         } else {
             startNewChat();
         }
         addEventListeners();
+        updateSendButtonState();
     }
 
     function addEventListeners() {
         chatForm.addEventListener('submit', handleSendMessage);
-        messageInput.addEventListener('input', autoResizeTextarea);
+        messageInput.addEventListener('input', () => {
+            autoResizeTextarea();
+            updateSendButtonState();
+        });
         messageInput.addEventListener('keydown', handleEnterKey);
         newChatBtn.addEventListener('click', startNewChat);
         chatHistoryList.addEventListener('click', handleSidebarClick);
+        
+        // Image handling listeners
         imageUploadBtn.addEventListener('click', () => imageUploadInput.click());
-        // Add more listeners for edit, delete, regenerate, and contextual chat later
+        imageUploadInput.addEventListener('change', handleImageUpload);
+        imagePreviewContainer.addEventListener('click', handleRemoveImage);
+
+        // Contextual chat listener
+        chatMessages.addEventListener('mouseup', handleTextSelection);
     }
 
     // ==================================================== //
@@ -66,10 +71,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const newChatSession = {
             id: currentChatId,
             title: 'New Chat',
-            messages: [] // Start with no messages
+            messages: []
         };
-        // Add to the beginning of the history array
         chatHistory.unshift(newChatSession);
+        clearInputs();
         renderChatHistorySidebar();
         renderChatMessages(currentChatId);
         messageInput.focus();
@@ -77,25 +82,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function switchChat(chatId) {
         currentChatId = chatId;
+        clearInputs();
         renderChatHistorySidebar();
         renderChatMessages(chatId);
     }
-    
-    // NOTE: A full delete implementation would need a confirmation dialog.
-    // This is a simplified version.
+
     function deleteChat(chatId) {
         chatHistory = chatHistory.filter(chat => chat.id !== chatId);
         saveChatsToLocalStorage();
         renderChatHistorySidebar();
-        
-        // If the deleted chat was the current one, start a new chat or load another
         if (currentChatId === chatId) {
-            if (chatHistory.length > 0) {
-                switchChat(chatHistory[0].id);
-            } else {
-                startNewChat();
-            }
+            chatHistory.length > 0 ? switchChat(chatHistory[0].id) : startNewChat();
         }
+    }
+    
+    function clearInputs() {
+        messageInput.value = '';
+        uploadedImages = [];
+        imageUploadInput.value = ''; // Reset file input
+        renderImagePreviews();
+        autoResizeTextarea();
+        updateSendButtonState();
     }
 
     // ==================================================== //
@@ -107,16 +114,12 @@ document.addEventListener('DOMContentLoaded', () => {
             const li = document.createElement('li');
             li.textContent = chat.title;
             li.dataset.chatId = chat.id;
-            if (chat.id === currentChatId) {
-                li.classList.add('active');
-            }
-            // Simple delete button for demonstration
+            if (chat.id === currentChatId) li.classList.add('active');
+            
             const deleteBtn = document.createElement('span');
             deleteBtn.textContent = '🗑️';
-            deleteBtn.classList.add('delete-btn');
-            deleteBtn.style.float = 'right';
-            deleteBtn.style.cursor = 'pointer';
-            deleteBtn.style.display = 'none'; // Hide by default
+            deleteBtn.className = 'delete-btn';
+            deleteBtn.style.cssText = 'float: right; cursor: pointer; display: none;';
             li.addEventListener('mouseover', () => deleteBtn.style.display = 'inline');
             li.addEventListener('mouseout', () => deleteBtn.style.display = 'none');
             
@@ -129,59 +132,117 @@ document.addEventListener('DOMContentLoaded', () => {
         chatMessages.innerHTML = '';
         const chat = chatHistory.find(c => c.id === chatId);
         if (!chat || chat.messages.length === 0) {
-            // Display a welcome message for new/empty chats
-            addMessageToUI('ai', 'Hello! How can I help you learn something new today?', false);
+            addMessageToUI({ role: 'ai', parts: [{ type: 'text', text: 'Hello! How can I help you learn something new today?' }] });
             return;
         }
-        chat.messages.forEach(msg => addMessageToUI(msg.role, msg.content, false));
+        chat.messages.forEach(msg => addMessageToUI(msg));
     }
 
-    function addMessageToUI(role, content, isStreaming = false) {
+    function addMessageToUI(message, isStreaming = false) {
+        const { role, parts } = message;
         const messageWrapper = document.createElement('div');
         messageWrapper.classList.add('message-wrapper', `${role}-message-wrapper`);
 
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', `${role}-message`);
 
+        let contentHTML = '';
         if (role === 'ai' && isStreaming) {
-            // Add typing indicator for streaming start
-            messageDiv.innerHTML = `<div class="typing-indicator"><span></span><span></span><span></span></div>`;
+            contentHTML = `<div class="typing-indicator"><span></span><span></span><span></span></div>`;
         } else {
-            // For non-streaming or completed messages, parse markdown
-            messageDiv.innerHTML = marked.parse(content);
+            parts.forEach(part => {
+                if (part.type === 'text') {
+                    contentHTML += marked.parse(part.text);
+                } else if (part.type === 'image') {
+                    contentHTML += `<div class="sent-image-container"><img src="${part.data}" alt="User uploaded image"></div>`;
+                }
+            });
         }
+        messageDiv.innerHTML = contentHTML;
 
         messageWrapper.appendChild(messageDiv);
         chatMessages.appendChild(messageWrapper);
         
-        // Apply syntax highlighting to any new code blocks
-        messageDiv.querySelectorAll('pre code').forEach((block) => {
-            hljs.highlightElement(block);
-        });
-
-        // Scroll to the bottom
+        messageDiv.querySelectorAll('pre code').forEach(hljs.highlightElement);
         chatMessages.scrollTop = chatMessages.scrollHeight;
-        return messageDiv; // Return the element for streaming updates
+        return messageDiv;
     }
 
     function autoResizeTextarea() {
         messageInput.style.height = 'auto';
         messageInput.style.height = `${messageInput.scrollHeight}px`;
     }
+    
+    function updateSendButtonState() {
+        sendBtn.classList.toggle('active', messageInput.value.trim().length > 0);
+    }
+    
+    // ==================================================== //
+    // |                IMAGE HANDLING                    | //
+    // ==================================================== //
+    function handleImageUpload(e) {
+        const files = e.target.files;
+        if (!files) return;
+
+        if (uploadedImages.length + files.length > 10) {
+            alert('You can upload a maximum of 10 images.');
+            return;
+        }
+
+        for (const file of files) {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                uploadedImages.push({
+                    mimeType: file.type,
+                    data: event.target.result // This is the Base64 string
+                });
+                renderImagePreviews();
+            };
+            reader.readAsDataURL(file);
+        }
+    }
+
+    function renderImagePreviews() {
+        imagePreviewContainer.innerHTML = '';
+        uploadedImages.forEach((image, index) => {
+            const thumbWrapper = document.createElement('div');
+            thumbWrapper.className = 'image-thumbnail';
+            
+            const img = document.createElement('img');
+            img.src = image.data;
+            
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'remove-image-btn';
+            removeBtn.innerHTML = '×';
+            removeBtn.dataset.index = index;
+            
+            thumbWrapper.appendChild(img);
+            thumbWrapper.appendChild(removeBtn);
+            imagePreviewContainer.appendChild(thumbWrapper);
+        });
+    }
+
+    function handleRemoveImage(e) {
+        if (e.target.classList.contains('remove-image-btn')) {
+            const indexToRemove = parseInt(e.target.dataset.index, 10);
+            uploadedImages.splice(indexToRemove, 1);
+            renderImagePreviews();
+        }
+    }
 
     // ==================================================== //
     // |                EVENT HANDLERS                    | //
     // ==================================================== //
     function handleSidebarClick(e) {
-        if (e.target && e.target.matches('li')) {
-            const chatId = e.target.dataset.chatId;
-            switchChat(chatId);
-        }
-        if (e.target && e.target.matches('.delete-btn')) {
-            e.stopPropagation(); // Prevent li click from firing
-            const chatId = e.target.parentElement.dataset.chatId;
-            if (confirm('Are you sure you want to delete this chat?')) {
-                deleteChat(chatId);
+        const li = e.target.closest('li');
+        if (li) {
+            if (e.target.classList.contains('delete-btn')) {
+                e.stopPropagation();
+                if (confirm('Are you sure you want to delete this chat?')) {
+                    deleteChat(li.dataset.chatId);
+                }
+            } else {
+                switchChat(li.dataset.chatId);
             }
         }
     }
@@ -189,7 +250,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function handleEnterKey(e) {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            chatForm.requestSubmit(); // Triggers the 'submit' event
+            chatForm.requestSubmit();
         }
     }
 
@@ -198,66 +259,83 @@ document.addEventListener('DOMContentLoaded', () => {
         if (isAIGenerating) return;
 
         const userInput = messageInput.value.trim();
-        if (!userInput) return;
+        if (!userInput && uploadedImages.length === 0) return;
 
-        // Add user message to state and UI
         const currentChat = chatHistory.find(c => c.id === currentChatId);
         
-        // If this is the first message, update the chat title
-        if (currentChat.messages.length === 0) {
-            currentChat.title = userInput.substring(0, 30) + '...';
-            renderChatHistorySidebar(); // Update sidebar with new title
+        // Construct the user message with multiple parts (text and images)
+        const userMessage = { role: 'user', parts: [] };
+        if (userInput) {
+            userMessage.parts.push({ type: 'text', text: userInput });
         }
-        
-        currentChat.messages.push({ role: 'user', content: userInput });
-        addMessageToUI('user', userInput);
-        saveChatsToLocalStorage();
+        uploadedImages.forEach(img => {
+            userMessage.parts.push({ type: 'image', data: img.data, mimeType: img.mimeType });
+        });
 
-        // Clear input and get AI response
-        messageInput.value = '';
-        autoResizeTextarea();
-        await getAIResponse();
+        // Update state and UI
+        if (currentChat.messages.length === 0 && userInput) {
+            currentChat.title = userInput.substring(0, 30) + (userInput.length > 30 ? '...' : '');
+            renderChatHistorySidebar();
+        }
+        currentChat.messages.push(userMessage);
+        addMessageToUI(userMessage);
+        saveChatsToLocalStorage();
+        
+        const imagesForAPI = [...uploadedImages]; // Copy images for the API call
+        clearInputs(); // Clear UI inputs immediately
+
+        await getAIResponse(imagesForAPI);
     }
 
     // ==================================================== //
     // |                 API COMMUNICATION                | //
     // ==================================================== //
-    async function getAIResponse() {
+    async function getAIResponse(images) {
         isAIGenerating = true;
-        const aiMessageElement = addMessageToUI('ai', '', true); // Show typing indicator
+        const aiMessageElement = addMessageToUI({ role: 'ai', parts: [] }, true);
 
         try {
             const currentChat = chatHistory.find(c => c.id === currentChatId);
             
+            // Format messages for Gemini API
+            const apiMessages = currentChat.messages.map(msg => {
+                const apiParts = msg.parts.map(part => {
+                    if (part.type === 'text') {
+                        return { text: part.text };
+                    }
+                    if (part.type === 'image') {
+                        // Gemini needs the Base64 data without the data URL prefix
+                        return { inline_data: { mime_type: part.mimeType, data: part.data.split(',')[1] } };
+                    }
+                }).filter(Boolean); // Filter out any null/undefined parts
+                
+                return { role: msg.role === 'ai' ? 'model' : 'user', parts: apiParts };
+            });
+
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: currentChat.messages }),
+                body: JSON.stringify({ messages: apiMessages }),
             });
 
-            if (!response.ok) {
-                throw new Error(`API Error: ${response.statusText}`);
-            }
+            if (!response.ok) throw new Error(`API Error: ${response.statusText}`);
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let fullResponse = '';
-            aiMessageElement.innerHTML = ''; // Clear typing indicator
+            aiMessageElement.innerHTML = '';
 
-            // Stream the response
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
                 
-                const chunk = decoder.decode(value, { stream: true });
-                fullResponse += chunk;
+                fullResponse += decoder.decode(value, { stream: true });
                 aiMessageElement.innerHTML = marked.parse(fullResponse);
                 chatMessages.scrollTop = chatMessages.scrollHeight;
             }
 
-            // Finalize the message
             aiMessageElement.querySelectorAll('pre code').forEach(hljs.highlightElement);
-            currentChat.messages.push({ role: 'ai', content: fullResponse });
+            currentChat.messages.push({ role: 'ai', parts: [{ type: 'text', text: fullResponse }] });
             saveChatsToLocalStorage();
 
         } catch (error) {
@@ -269,28 +347,24 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ==================================================== //
-    // |             FEATURE IMPLEMENTATIONS (WIP)        | //
+    // |             CONTEXTUAL CHAT FEATURE              | //
     // ==================================================== //
-    // The logic for these will be more complex. This is a placeholder.
     function handleTextSelection(e) {
         const selection = window.getSelection();
         const selectedText = selection.toString().trim();
 
         if (selectedText && selection.anchorNode.parentElement.closest('.ai-message')) {
-            // We have a selection inside an AI message!
             // This is where you would show your contextual popup.
-            console.log("Selected AI text:", selectedText);
-            // Example:
-            // popupContextQuote.textContent = selectedText;
-            // contextualChatPopup.classList.remove('hidden');
-            alert(`Contextual Chat Triggered!\n\nSelected Text: "${selectedText}"\n\n(This feature's UI is not fully wired yet.)`);
+            // For now, we'll use an alert to demonstrate it's working.
+            alert(`Contextual Chat Triggered!\n\nSelected Text: "${selectedText}"\n\n(This feature's UI can now be fully implemented.)`);
+            // To implement fully:
+            // 1. Get the popup elements (already referenced at the top).
+            // 2. Set the content of the blockquote: popupContextQuote.textContent = selectedText;
+            // 3. Show the popup: contextualChatPopup.classList.remove('hidden');
+            // 4. Add event listeners to the popup's input and send button to handle the sub-conversation.
         }
     }
-    
-    // Add the listener for the contextual chat feature
-    chatMessages.addEventListener('mouseup', handleTextSelection);
 
-
-    // Let's go!
+    // Let's start the application!
     initializeApp();
 });
